@@ -1,0 +1,26 @@
+:root {
+  --ink: #34231c;
+  --muted: #806f65;
+  --coffee: #59392b;
+  --coffee-deep: #40281f;
+  --cream: #f7f2eb;
+  --paper: #fffdf9;
+  --line: #e9dfd5;
+  --accent: #c27b4a;
+  --sans: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --heading: Georgia, 'Times New Roman', serif;
+  font: 16px/1.5 var(--sans);
+  letter-spacing: 0;
+  color: var(--muted);
+  background: var(--cream);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; overflow-x: hidden; }
+button, select { font: inherit; }
+h1, h2, h3 { margin: 0; color: var(--ink); font-family: var(--heading); }
+p { margin: 0; }
