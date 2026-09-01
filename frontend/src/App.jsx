@@ -39,6 +39,7 @@ function App() {
   const [showFavorites, setShowFavorites] = useState(false)
   const [showPlanned, setShowPlanned] = useState(false)
   const [planned, setPlanned] = useState([])
+  const [businessSearch, setBusinessSearch] = useState('')
   const [user, setUser] = useState(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [ownerAuthOpen, setOwnerAuthOpen] = useState(false)
@@ -145,15 +146,23 @@ function App() {
     setStatus('loading')
     setError('')
     try {
-      const [googleResponse, businessResponse] = await Promise.all([
-        fetch(`/api/cafes?ilce=${encodeURIComponent(selectedDistrict)}`),
-        fetch('/api/public/businesses')
-      ])
-      const googleData = await googleResponse.json()
-      const businesses = await businessResponse.json()
-      if (!googleResponse.ok) throw new Error(googleData.error || 'Kafeler yüklenemedi.')
+      const response = await fetch('/api/public/businesses')
+      const businesses = await response.json()
+      if (!response.ok) throw new Error(businesses.error || 'Kafeler yüklenemedi.')
+
       const ownerBusinesses = (businesses || [])
-        .filter((business) => (business.il || '').toLowerCase() === selectedDistrict.toLowerCase() || (business.ilce || '').toLowerCase() === selectedDistrict.toLowerCase())
+        .filter((business) => {
+          const listedDistrict = (selectedDistrict || '').toLowerCase()
+          const sameIl = (business.il || '').toLowerCase() === listedDistrict
+          const sameIlce = (business.ilce || '').toLowerCase() === listedDistrict
+          return sameIl || sameIlce || !listedDistrict || listedDistrict === 'kocaeli'
+        })
+        .filter((business) => {
+          const term = businessSearch.trim().toLowerCase()
+          if (!term) return true
+          const haystack = `${business.name || ''} ${business.il || ''} ${business.ilce || ''} ${business.adres || ''}`.toLowerCase()
+          return haystack.includes(term)
+        })
         .map((business) => ({
           place_id: `owner-${business.isletme_id}`,
           id: business.isletme_id,
@@ -166,7 +175,8 @@ function App() {
           is_owner_business: true,
           ...business,
         }))
-      setCafes([...(googleData.results || []), ...ownerBusinesses])
+
+      setCafes(ownerBusinesses)
       setStatus('ready')
     } catch (requestError) {
       setError(requestError.message)
@@ -402,6 +412,20 @@ function App() {
       {ownerAuthOpen && <div className="auth-backdrop" role="presentation" onClick={(event) => event.target === event.currentTarget && setOwnerAuthOpen(false)}><form className="auth-panel small-owner-panel" onSubmit={submitOwnerAuth}><button className="auth-close" type="button" onClick={() => setOwnerAuthOpen(false)} aria-label="Pencereyi kapat">×</button><p className="eyebrow">Cafe Sahibi</p><h2>{ownerAuthMode === 'login' ? 'Giriş yap' : 'Kayıt ol'}</h2><p className="auth-copy">{ownerAuthMode === 'login' ? 'İşletme paneline erişmek için hesabınıza giriş yapın.' : 'İşletmenizi eklemek için bir hesap oluşturun.'}</p>{ownerAuthMode === 'register' && <input value={ownerAuthForm.name} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, name: event.target.value })} placeholder="İsim / işletme adı" aria-label="Cafe sahibi isim" required />}<input type="email" value={ownerAuthForm.email} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, email: event.target.value })} placeholder="E-posta" aria-label="Cafe sahibi e-posta" required /><input type="password" value={ownerAuthForm.password} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, password: event.target.value })} placeholder="Şifre" aria-label="Cafe sahibi şifre" minLength="6" required />{ownerAuthError && <p className="auth-error">{ownerAuthError}</p>}<button className="primary-button auth-submit" type="submit">{ownerAuthMode === 'login' ? 'Devam et' : 'Kayıt ol'} <span>→</span></button><button className="auth-switch" type="button" onClick={() => { setOwnerAuthMode(ownerAuthMode === 'login' ? 'register' : 'login'); setOwnerAuthError('') }}>{ownerAuthMode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}</button></form></div>}
 
       <main>
+        <section className="db-search-panel" aria-label="Veritabanı kafe arama">
+          <div className="db-search-box">
+            <span className="pin-icon">⌕</span>
+            <input
+              type="text"
+              value={businessSearch}
+              onChange={(event) => setBusinessSearch(event.target.value)}
+              placeholder="Kafe adını, ilçeyi veya adresi ara"
+              aria-label="Kafe ara"
+            />
+            <button className="primary-button" type="button" onClick={() => findCafes(district)}>Ara</button>
+          </div>
+        </section>
+
         {showOwnerPage && ownerUser ? (
           <section className="favorites-page" style={{ display: 'grid', gap: '1.5rem' }}>
             <div className="section-heading"><div><p className="eyebrow">Cafe sahibi paneli</p><h1>Kafeni yayınla</h1></div><button className="outline-button" type="button" onClick={() => setShowOwnerPage(false)}>Geri dön</button></div>
@@ -549,7 +573,12 @@ function App() {
               {status === 'loading' && <div className="loading-grid">{[1, 2, 3].map((item) => <div className="skeleton-card" key={item} />)}</div>}
               {status === 'ready' && cafes.length === 0 && <div className="state-box"><strong>Bu ilçede sonuç bulamadık.</strong><span>Başka bir Kocaeli ilçesi seçip yeniden deneyebilirsin.</span></div>}
               {status === 'ready' && cafes.length > 0 && (
-                <div className="cafe-grid">{sortedCafes.map((cafe, index) => (
+                <div className="cafe-grid">{sortedCafes.filter((cafe) => {
+                    const term = businessSearch.trim().toLowerCase()
+                    if (!term) return true
+                    const haystack = `${cafe.name || ''} ${cafe.il || ''} ${cafe.ilce || ''} ${cafe.formatted_address || ''}`.toLowerCase()
+                    return haystack.includes(term)
+                  }).map((cafe, index) => (
                   <article className="cafe-card" key={cafe.place_id || cafe.name}>
                     <div className="card-image-wrap"><img src={fallbackImages[index % fallbackImages.length]} alt={cafe.name} /><button className={`favorite-button ${isFavorite(cafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(cafe)} aria-label={`${cafe.name} favori durumu`}>{isFavorite(cafe) ? '♥' : '♡'}</button><button className={`planned-button ${isPlanned(cafe) ? 'planned-saved' : ''}`} type="button" onClick={() => togglePlanned(cafe)} aria-label={`${cafe.name} gidilecekler durumu`}>{isPlanned(cafe) ? '✓' : '+'}</button></div>
                     <div className="card-content"><div className="card-title-row"><h3>{cafe.name}</h3><span className="rating">★ {cafe.rating || '—'}</span></div><p className="address">⌖ {cafe.formatted_address || `${district}, Kocaeli`}</p><button className="detail-link" type="button" onClick={() => openCafe(cafe, index)}>Mekanı incele <span>↗</span></button></div>

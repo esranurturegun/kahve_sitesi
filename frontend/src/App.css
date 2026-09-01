@@ -44,7 +44,11 @@
 .primary-button { padding: 0 17px; border-radius: 6px; color: #fff; background: var(--coffee); font-size: 12px; font-weight: bold; }
 .primary-button span, .detail-link span { margin-left: 8px; font-size: 16px; }
 .primary-button:disabled { opacity: .65; cursor: wait; }
-.results-section { max-width: 1120px; margin: 0 auto; padding: 63px clamp(20px, 5vw, 56px) 90px; }
+.db-search-panel { max-width: 1120px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 56px) 18px; }
+.db-search-box { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid rgba(112, 72, 50, .14); border-radius: 14px; background: rgba(255, 253, 249, .92); box-shadow: 0 12px 28px rgba(78, 48, 33, .08); }
+.db-search-box input { flex: 1; border: 0; background: transparent; color: var(--ink); font: 14px var(--sans); outline: 0; }
+.db-search-box .primary-button { min-height: 42px; }
+.results-section { max-width: 1120px; margin: 0 auto; padding: 24px clamp(20px, 5vw, 56px) 90px; }
 .favorites-page { max-width: 1120px; min-height: 600px; margin: 0 auto; padding: 72px clamp(20px, 5vw, 56px) 90px; }
 .favorites-page .section-heading h1 { font-size: clamp(36px, 5vw, 58px); line-height: 1; }
 .favorites-page .state-box button { margin-top: 18px; padding: 10px 15px; border-radius: 6px; color: #fff; background: var(--coffee); }
