@@ -41,14 +41,38 @@ function App() {
   const [planned, setPlanned] = useState([])
   const [user, setUser] = useState(null)
   const [authOpen, setAuthOpen] = useState(false)
+  const [ownerAuthOpen, setOwnerAuthOpen] = useState(false)
+  const [ownerAuthMode, setOwnerAuthMode] = useState('login')
   const [authMode, setAuthMode] = useState('login')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
+  const [ownerAuthForm, setOwnerAuthForm] = useState({ name: '', email: '', password: '' })
   const [authError, setAuthError] = useState('')
+  const [ownerAuthError, setOwnerAuthError] = useState('')
+  const [ownerUser, setOwnerUser] = useState(null)
+  const [ownerBusinesses, setOwnerBusinesses] = useState([])
+  const [ownerForm, setOwnerForm] = useState({
+    name: '',
+    aciklama: '',
+    adres: '',
+    il: 'Kocaeli',
+    ilce: 'Darıca',
+    enlem: '40.7654',
+    boylam: '29.9408',
+    cover_image: '',
+  })
+  const [ownerFormError, setOwnerFormError] = useState('')
+  const [showOwnerPage, setShowOwnerPage] = useState(false)
 
   const token = localStorage.getItem('kahve-token')
+  const ownerToken = localStorage.getItem('kahve-owner-token')
 
   async function apiFetch(url, options = {}) {
     const headers = { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers }
+    return fetch(url, { ...options, headers })
+  }
+
+  async function ownerApiFetch(url, options = {}) {
+    const headers = { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(ownerToken ? { Authorization: `Bearer ${ownerToken}` } : {}), ...options.headers }
     return fetch(url, { ...options, headers })
   }
 
@@ -75,7 +99,23 @@ function App() {
       }
     }
 
+    async function loadOwnerData() {
+      const savedOwnerToken = localStorage.getItem('kahve-owner-token')
+      if (!savedOwnerToken) return
+      try {
+        const response = await fetch('/api/owner/me', {
+          headers: { Authorization: `Bearer ${savedOwnerToken}` },
+        })
+        if (!response.ok) throw new Error('Owner session invalid.')
+        const data = await response.json()
+        setOwnerUser(data.user)
+      } catch {
+        localStorage.removeItem('kahve-owner-token')
+      }
+    }
+
     loadUserData()
+    loadOwnerData()
   }, [])
 
   useEffect(() => {
@@ -105,10 +145,28 @@ function App() {
     setStatus('loading')
     setError('')
     try {
-      const response = await fetch(`/api/cafes?ilce=${encodeURIComponent(selectedDistrict)}`)
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Kafeler yüklenemedi.')
-      setCafes(data.results || [])
+      const [googleResponse, businessResponse] = await Promise.all([
+        fetch(`/api/cafes?ilce=${encodeURIComponent(selectedDistrict)}`),
+        fetch('/api/public/businesses')
+      ])
+      const googleData = await googleResponse.json()
+      const businesses = await businessResponse.json()
+      if (!googleResponse.ok) throw new Error(googleData.error || 'Kafeler yüklenemedi.')
+      const ownerBusinesses = (businesses || [])
+        .filter((business) => (business.il || '').toLowerCase() === selectedDistrict.toLowerCase() || (business.ilce || '').toLowerCase() === selectedDistrict.toLowerCase())
+        .map((business) => ({
+          place_id: `owner-${business.isletme_id}`,
+          id: business.isletme_id,
+          name: business.name,
+          formatted_address: business.adres,
+          rating: 4.8,
+          image: business.cover_image || business.gallery_image || fallbackImages[0],
+          data_source: 'Cafe Sahibi',
+          fetched_at: business.created_at,
+          is_owner_business: true,
+          ...business,
+        }))
+      setCafes([...(googleData.results || []), ...ownerBusinesses])
       setStatus('ready')
     } catch (requestError) {
       setError(requestError.message)
@@ -232,6 +290,80 @@ function App() {
     setShowFavorites(false)
   }
 
+  async function submitOwnerAuth(event) {
+    event.preventDefault()
+    setOwnerAuthError('')
+    try {
+      const response = await fetch(`/api/owner/auth/${ownerAuthMode === 'login' ? 'login' : 'register'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ownerAuthForm),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'İşlem gerçekleştirilemedi.')
+      localStorage.setItem('kahve-owner-token', data.token)
+      setOwnerUser(data.user)
+      setShowOwnerPage(true)
+      setOwnerAuthOpen(false)
+      setOwnerAuthForm({ name: '', email: '', password: '' })
+      setOwnerAuthMode('login')
+      await loadOwnerBusinesses()
+    } catch (requestError) {
+      setOwnerAuthError(requestError.message)
+    }
+  }
+
+  async function loadOwnerBusinesses() {
+    const savedOwnerToken = localStorage.getItem('kahve-owner-token')
+    if (!savedOwnerToken) return
+    try {
+      const response = await fetch('/api/owner/businesses', {
+        headers: { Authorization: `Bearer ${savedOwnerToken}` },
+      })
+      if (!response.ok) throw new Error('İşletmeler alınamadı.')
+      const data = await response.json()
+      setOwnerBusinesses(data)
+      if (data.length > 0) setOwnerForm({ ...ownerForm, name: data[0].name, aciklama: data[0].aciklama || '', adres: data[0].adres || '', il: data[0].il || 'Kocaeli', ilce: data[0].ilce || '', enlem: String(data[0].enlem || ''), boylam: String(data[0].boylam || ''), cover_image: data[0].cover_image || '' })
+    } catch {
+      setOwnerBusinesses([])
+    }
+  }
+
+  async function publishBusiness(event) {
+    event.preventDefault()
+    setOwnerFormError('')
+    const savedOwnerToken = localStorage.getItem('kahve-owner-token')
+    if (!savedOwnerToken) {
+      setOwnerFormError('Önce cafe sahibi olarak giriş yapmalısınız.')
+      return
+    }
+    try {
+      const response = await fetch('/api/owner/businesses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${savedOwnerToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...ownerForm,
+          enlem: Number(ownerForm.enlem),
+          boylam: Number(ownerForm.boylam),
+          il: ownerForm.il || 'Kocaeli',
+          ilce: ownerForm.ilce || 'Darıca',
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Kafe yayınlanamadı.')
+      setOwnerBusinesses((current) => [data, ...current])
+      setOwnerForm({ name: '', aciklama: '', adres: '', il: 'Kocaeli', ilce: 'Darıca', enlem: '40.7654', boylam: '29.9408', cover_image: '' })
+      setShowOwnerPage(false)
+      setSelectedCafe(null)
+      setShowFavorites(false)
+      setShowPlanned(false)
+      setError('')
+      await findCafes(district)
+    } catch (requestError) {
+      setOwnerFormError(requestError.message)
+    }
+  }
+
   async function addReview(event) {
     event.preventDefault()
     if (!user) {
@@ -259,13 +391,51 @@ function App() {
       <header className="topbar">
         <a className="brand" href="/" aria-label="Kahve Keşfi ana sayfa"><span className="brand-mark">☕</span><span><strong>Kahve</strong><small>KEŞFİ</small></span></a>
         <nav className="nav-links" aria-label="Ana menü"><button className={!showFavorites && !showPlanned && !selectedCafe ? 'active' : ''} type="button" onClick={openDiscovery}>Keşfet</button><button className={showFavorites ? 'active' : ''} type="button" onClick={openFavorites}>Favoriler <span className="nav-count">{user ? favorites.length : 0}</span></button><button className={showPlanned ? 'active' : ''} type="button" onClick={openPlanned}>Gidilecekler <span className="nav-count">{user ? planned.length : 0}</span></button><a href="#hakkimizda">Hakkımızda</a></nav>
-        <button className="profile-chip" type="button" onClick={() => user ? logout() : setAuthOpen(true)}><span>{user ? user.name.slice(0, 2).toUpperCase() : 'G'}</span><small>{user ? `${user.name}<br />Çıkış yap` : 'Misafir<br />Giriş yap'}</small></button>
+        <div className="header-actions">
+          <button className="profile-chip" type="button" onClick={() => user ? logout() : setAuthOpen(true)}><span>{user ? user.name.slice(0, 2).toUpperCase() : 'G'}</span><small>{user ? `${user.name}<br />Çıkış yap` : 'Misafir<br />Giriş yap'}</small></button>
+          <button className="owner-circle-button" type="button" onClick={() => setOwnerAuthOpen(true)} aria-label="Cafe sahibi girişi">☕</button>
+        </div>
       </header>
 
       {authOpen && <div className="auth-backdrop" role="presentation" onClick={(event) => event.target === event.currentTarget && setAuthOpen(false)}><form className="auth-panel" onSubmit={submitAuth}><button className="auth-close" type="button" onClick={() => setAuthOpen(false)} aria-label="Pencereyi kapat">×</button><p className="eyebrow">Kahve Keşfi hesabı</p><h2>{authMode === 'login' ? 'Tekrar hoş geldin' : 'Hesap oluştur'}</h2><p className="auth-copy">Favorilerini ve gitmek istediğin mekanları kaydet.</p>{authMode === 'register' && <input value={authForm.name} onChange={(event) => setAuthForm({ ...authForm, name: event.target.value })} placeholder="Adın" aria-label="Adın" required />}<input type="email" value={authForm.email} onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })} placeholder="E-posta" aria-label="E-posta" required /><input type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} placeholder="Şifre (en az 6 karakter)" aria-label="Şifre" minLength="6" required />{authError && <p className="auth-error">{authError}</p>}<button className="primary-button auth-submit" type="submit">{authMode === 'login' ? 'Giriş yap' : 'Kayıt ol'} <span>→</span></button><button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError('') }}>{authMode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}</button></form></div>}
 
+      {ownerAuthOpen && <div className="auth-backdrop" role="presentation" onClick={(event) => event.target === event.currentTarget && setOwnerAuthOpen(false)}><form className="auth-panel small-owner-panel" onSubmit={submitOwnerAuth}><button className="auth-close" type="button" onClick={() => setOwnerAuthOpen(false)} aria-label="Pencereyi kapat">×</button><p className="eyebrow">Cafe Sahibi</p><h2>{ownerAuthMode === 'login' ? 'Giriş yap' : 'Kayıt ol'}</h2><p className="auth-copy">{ownerAuthMode === 'login' ? 'İşletme paneline erişmek için hesabınıza giriş yapın.' : 'İşletmenizi eklemek için bir hesap oluşturun.'}</p>{ownerAuthMode === 'register' && <input value={ownerAuthForm.name} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, name: event.target.value })} placeholder="İsim / işletme adı" aria-label="Cafe sahibi isim" required />}<input type="email" value={ownerAuthForm.email} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, email: event.target.value })} placeholder="E-posta" aria-label="Cafe sahibi e-posta" required /><input type="password" value={ownerAuthForm.password} onChange={(event) => setOwnerAuthForm({ ...ownerAuthForm, password: event.target.value })} placeholder="Şifre" aria-label="Cafe sahibi şifre" minLength="6" required />{ownerAuthError && <p className="auth-error">{ownerAuthError}</p>}<button className="primary-button auth-submit" type="submit">{ownerAuthMode === 'login' ? 'Devam et' : 'Kayıt ol'} <span>→</span></button><button className="auth-switch" type="button" onClick={() => { setOwnerAuthMode(ownerAuthMode === 'login' ? 'register' : 'login'); setOwnerAuthError('') }}>{ownerAuthMode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}</button></form></div>}
+
       <main>
-        {selectedCafe ? (
+        {showOwnerPage && ownerUser ? (
+          <section className="favorites-page" style={{ display: 'grid', gap: '1.5rem' }}>
+            <div className="section-heading"><div><p className="eyebrow">Cafe sahibi paneli</p><h1>Kafeni yayınla</h1></div><button className="outline-button" type="button" onClick={() => setShowOwnerPage(false)}>Geri dön</button></div>
+            <form className="auth-panel small-owner-panel" style={{ width: '100%', maxWidth: '760px', margin: '0 auto' }} onSubmit={publishBusiness}>
+              <p className="eyebrow">Kafe bilgileri</p>
+              <div style={{ display: 'grid', gap: '0.9rem' }}>
+                <input value={ownerForm.name} onChange={(event) => setOwnerForm({ ...ownerForm, name: event.target.value })} placeholder="Kafe adı" aria-label="Kafe adı" required />
+                <textarea value={ownerForm.aciklama} onChange={(event) => setOwnerForm({ ...ownerForm, aciklama: event.target.value })} placeholder="Kısa tanım / açıklama" aria-label="Kafe açıklaması" rows="3" />
+                <input value={ownerForm.adres} onChange={(event) => setOwnerForm({ ...ownerForm, adres: event.target.value })} placeholder="Adres" aria-label="Adres" required />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <input value={ownerForm.il} onChange={(event) => setOwnerForm({ ...ownerForm, il: event.target.value })} placeholder="İl" aria-label="İl" required />
+                  <input value={ownerForm.ilce} onChange={(event) => setOwnerForm({ ...ownerForm, ilce: event.target.value })} placeholder="İlçe" aria-label="İlçe" required />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <input value={ownerForm.enlem} onChange={(event) => setOwnerForm({ ...ownerForm, enlem: event.target.value })} placeholder="Enlem" aria-label="Enlem" required />
+                  <input value={ownerForm.boylam} onChange={(event) => setOwnerForm({ ...ownerForm, boylam: event.target.value })} placeholder="Boylam" aria-label="Boylam" required />
+                </div>
+                <input value={ownerForm.cover_image} onChange={(event) => setOwnerForm({ ...ownerForm, cover_image: event.target.value })} placeholder="Kapak fotoğrafı URL" aria-label="Kapak fotoğrafı URL" />
+                {ownerFormError && <p className="auth-error">{ownerFormError}</p>}
+                <button className="primary-button auth-submit" type="submit">Yayınla <span>→</span></button>
+              </div>
+            </form>
+            {ownerBusinesses.length > 0 && (
+              <div className="cafe-grid">
+                {ownerBusinesses.map((business) => (
+                  <article className="cafe-card" key={business.isletme_id}>
+                    <div className="card-image-wrap"><img src={business.cover_image || fallbackImages[0]} alt={business.name} /></div>
+                    <div className="card-content"><div className="card-title-row"><h3>{business.name}</h3><span className="rating">★ 4.8</span></div><p className="address">⌖ {business.adres}</p><p className="detail-source">{business.il} / {business.ilce}</p></div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : selectedCafe ? (
           <section className="detail-page">
             <button className="back-link" type="button" onClick={() => setSelectedCafe(null)}>← Kafelere dön</button>
             <div className="detail-hero">

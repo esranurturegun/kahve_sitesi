@@ -8,8 +8,11 @@
 .nav-links a, .nav-links button { color: #ddc9bd; text-decoration: none; font-size: 12px; padding: 8px 12px; border: 0; border-radius: 6px; background: none; cursor: pointer; }
 .nav-links a:hover, .nav-links button:hover, .nav-links a.active, .nav-links button.active { color: var(--coffee-deep); background: #f6e9dc; }
 .nav-count { margin-left: 3px; opacity: .7; }
+.header-actions { display: flex; align-items: center; gap: 10px; }
 .profile-chip { display: flex; align-items: center; gap: 8px; padding: 0; border: 0; font-size: 10px; line-height: 1.2; color: #ddc9bd; background: none; cursor: pointer; text-align: left; }
 .profile-chip span { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; background: #aa8874; color: #fff; font-size: 10px; }
+.owner-circle-button { width: 38px; height: 38px; border: 1px solid rgba(255,255,255,.25); border-radius: 50%; background: rgba(255,255,255,.08); color: #fff; cursor: pointer; font-size: 18px; display: grid; place-items: center; box-shadow: 0 8px 18px rgba(0,0,0,.12); }
+.owner-circle-button:hover { background: rgba(255,255,255,.15); }
 .weather-widget { width: 174px; flex: 0 0 174px; padding: 12px; border: 1px solid rgba(112, 72, 50, .14); border-radius: 10px; color: var(--ink); background: rgba(255, 253, 249, .94); box-shadow: 0 10px 24px rgba(78, 48, 33, .1); backdrop-filter: blur(8px); }
 .weather-widget-head { display: flex; align-items: center; gap: 7px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--coffee); }
 .weather-widget-head span { color: var(--accent); font-size: 18px; }
@@ -30,12 +33,12 @@
 .hero-copy h1 { font-size: clamp(43px, 5.5vw, 72px); line-height: .98; letter-spacing: -2px; }
 .hero-copy h1 em { color: var(--coffee); font-weight: normal; }
 .hero-text { max-width: 385px; margin-top: 22px; font-size: 15px; line-height: 1.7; }
-.hero-tools { display: flex; align-items: stretch; gap: 12px; }
-.search-panel { width: min(100%, 355px); padding: 24px; border: 1px solid rgba(112, 72, 50, .14); border-radius: 12px; background: rgba(255, 253, 249, .88); box-shadow: 0 18px 45px rgba(78, 48, 33, .13); box-sizing: border-box; }
+.hero-tools { display: flex; align-items: stretch; gap: 12px; justify-content: flex-end; }
+.search-panel { width: min(100%, 370px); padding: 22px; border: 1px solid rgba(112, 72, 50, .14); border-radius: 12px; background: rgba(255, 253, 249, .88); box-shadow: 0 18px 45px rgba(78, 48, 33, .13); box-sizing: border-box; margin-left: auto; }
 .search-label { display: flex; align-items: center; gap: 7px; margin-bottom: 15px; color: var(--ink); font: 15px var(--heading); }
 .pin-icon { color: var(--accent); font-size: 20px; }
 .search-row { display: flex; gap: 10px; }
-.select-wrap { flex: 1; display: flex; flex-direction: column; gap: 3px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--muted); font-size: 10px; }
+.select-wrap { flex: 1; display: flex; flex-direction: column; gap: 3px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--muted); font-size: 10px; min-width: 155px; }
 .select-wrap select { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font: 14px var(--sans); }
 .primary-button, .detail-link, .state-box button { border: 0; cursor: pointer; font-family: var(--sans); }
 .primary-button { padding: 0 17px; border-radius: 6px; color: #fff; background: var(--coffee); font-size: 12px; font-weight: bold; }
@@ -124,6 +127,7 @@ footer strong { color: #fff0e5; font-family: var(--heading); font-weight: normal
 .review-form .primary-button:disabled { cursor: not-allowed; opacity: .45; }
 .auth-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(52, 35, 28, .5); }
 .auth-panel { width: min(100%, 390px); position: relative; padding: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: 0 24px 70px rgba(52, 35, 28, .25); }
+.small-owner-panel { width: min(100%, 360px); }
 .auth-panel h2 { font-size: 31px; }
 .auth-copy { margin-top: 8px; font-size: 13px; }
 .auth-panel input { width: 100%; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; outline: 0; color: var(--ink); background: #fff; font: 13px var(--sans); }

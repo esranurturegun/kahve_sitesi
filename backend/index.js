@@ -139,11 +139,18 @@ async function ensureSchema() {
       ilce VARCHAR(50),
       enlem DECIMAL(10,7) NOT NULL,
       boylam DECIMAL(10,7) NOT NULL,
+      cover_image VARCHAR(1000),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (sahip_id) REFERENCES isletme_sahipleri(id) ON DELETE CASCADE,
       INDEX isletme_location (il, ilce)
     )
   `);
+
+  try {
+    await pool.query('ALTER TABLE isletmeler ADD COLUMN cover_image VARCHAR(1000) NULL');
+  } catch (error) {
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
+  }
 
   // İşletme Resimleri Tablosu
   await pool.query(`
@@ -568,6 +575,26 @@ app.post('/api/owner/auth/logout', requireOwner, async (req, res) => {
 
 // ========== İŞLETMELER ENDPOINTS ==========
 
+app.get('/api/public/businesses', async (req, res) => {
+  try {
+    const [businesses] = await pool.query(`
+      SELECT i.*, (
+        SELECT ir.dosya_yolu
+        FROM isletme_resimleri ir
+        WHERE ir.isletme_id = i.isletme_id
+        ORDER BY ir.id ASC
+        LIMIT 1
+      ) AS gallery_image
+      FROM isletmeler i
+      ORDER BY i.created_at DESC
+    `);
+    return res.json(businesses);
+  } catch (error) {
+    console.error('Get public businesses error:', error.message || error);
+    return res.status(500).json({ error: 'Yayındaki kafeler alınamadı.' });
+  }
+});
+
 app.get('/api/owner/businesses', requireOwner, async (req, res) => {
   try {
     const [businesses] = await pool.query(
@@ -586,16 +613,16 @@ app.post('/api/owner/businesses', requireOwner, async (req, res) => {
     return res.status(503).json({ error: dbUnavailableMessage });
   }
 
-  const { name, aciklama, adres, il, ilce, enlem, boylam } = req.body;
+  const { name, aciklama, adres, il, ilce, enlem, boylam, cover_image } = req.body;
   if (!name?.trim() || !adres?.trim() || !il?.trim() || !enlem || !boylam) {
     return res.status(400).json({ error: 'İşletme adı, adres, il, enlem ve boylam zorunludur.' });
   }
 
   try {
     const [result] = await pool.query(
-      `INSERT INTO isletmeler (sahip_id, name, aciklama, adres, il, ilce, enlem, boylam)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.owner.id, name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, enlem, boylam]
+      `INSERT INTO isletmeler (sahip_id, name, aciklama, adres, il, ilce, enlem, boylam, cover_image)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.owner.id, name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, enlem, boylam, cover_image || null]
     );
     const [newBusiness] = await pool.query('SELECT * FROM isletmeler WHERE isletme_id = ?', [result.insertId]);
     return res.status(201).json(newBusiness[0]);
