@@ -3,6 +3,8 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 
 dotenv.config();
 
@@ -10,6 +12,126 @@ const app = express();
 const port = process.env.PORT || 3000;
 const dbUnavailableMessage = 'Veritabanı şu anda erişilemez. MySQL sunucusunu açıp tekrar deneyin.';
 let databaseReady = false;
+
+const uploadsDir = path.join(__dirname, 'uploads', 'isletmeler');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+let uploadMiddleware;
+try {
+  const multer = require('multer');
+  const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, uploadsDir);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+      const uniqueName = `${crypto.randomBytes(16).toString('hex')}${ext}`;
+      cb(null, uniqueName);
+    },
+  });
+
+  const fileFilter = (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    const allowedExts = ['.jpg', '.jpeg', '.png', '.webp'];
+    const ext = path.extname(file.originalname).toLowerCase();
+
+    if (allowedTypes.includes(file.mimetype) || allowedExts.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Sadece JPG, JPEG, PNG ve WEBP formatında resim yüklenebilir.'), false);
+    }
+  };
+
+  const upload = multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter,
+  });
+
+  uploadMiddleware = (req, res, next) => {
+    upload.array('resimler', 10)(req, res, (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'Resim boyutu 5MB sınırı aşamaz.' });
+        }
+        return res.status(400).json({ error: err.message || 'Resim yüklenemedi.' });
+      }
+      if (!req.files && req.file) {
+        req.files = [req.file];
+      }
+      next();
+    });
+  };
+} catch {
+  uploadMiddleware = async (req, res, next) => {
+    const contentType = req.headers['content-type'] || '';
+    if (!contentType.includes('multipart/form-data')) {
+      return next();
+    }
+
+    const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!match) return res.status(400).json({ error: 'Geçersiz form verisi.' });
+    const boundary = match[1] || match[2];
+
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const buffer = Buffer.concat(chunks);
+        if (buffer.length > 5 * 1024 * 1024) {
+          return res.status(400).json({ error: 'Resim boyutu 5MB sınırı aşamaz.' });
+        }
+
+        const boundaryBuf = Buffer.from(`--${boundary}`);
+        const parts = [];
+        let start = 0;
+
+        while (start < buffer.length) {
+          const idx = buffer.indexOf(boundaryBuf, start);
+          if (idx === -1) break;
+          if (start > 0) {
+            parts.push(buffer.subarray(start, idx - 2));
+          }
+          start = idx + boundaryBuf.length + 2;
+        }
+
+        req.files = [];
+        for (const part of parts) {
+          const headerEnd = part.indexOf('\r\n\r\n');
+          if (headerEnd === -1) continue;
+          const headerText = part.subarray(0, headerEnd).toString('utf8');
+          const fileContent = part.subarray(headerEnd + 4);
+
+          if (headerText.includes('filename=')) {
+            const filenameMatch = headerText.match(/filename="([^"]+)"/i);
+            const originalname = filenameMatch ? filenameMatch[1] : 'image.jpg';
+            const ext = path.extname(originalname).toLowerCase() || '.jpg';
+            if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
+              return res.status(400).json({ error: 'Sadece JPG, JPEG, PNG ve WEBP formatında resim yüklenebilir.' });
+            }
+            const uniqueName = `${crypto.randomBytes(16).toString('hex')}${ext}`;
+            const filePath = path.join(uploadsDir, uniqueName);
+            fs.writeFileSync(filePath, fileContent);
+            req.files.push({
+              filename: uniqueName,
+              originalname,
+              path: filePath,
+              size: fileContent.length,
+            });
+          }
+        }
+        next();
+      } catch (err) {
+        return res.status(500).json({ error: 'Dosya işlenemedi: ' + err.message });
+      }
+    });
+  };
+}
+
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: Number(process.env.DB_PORT || 3306),
@@ -299,6 +421,13 @@ app.post('/api/auth/logout', requireUser, async (req, res) => {
   return res.status(204).end();
 });
 
+function formatMysqlDatetime(dateInput) {
+  if (!dateInput) return null;
+  const parsed = new Date(dateInput);
+  if (isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 app.get('/api/favorites', requireUser, async (req, res) => {
   try {
     const [favorites] = await pool.query(
@@ -323,17 +452,18 @@ app.post('/api/favorites', requireUser, async (req, res) => {
   }
 
   try {
+    const formattedFetchedAt = formatMysqlDatetime(fetched_at);
     await pool.query(
       `INSERT INTO favoriler (user_id, place_id, name, formatted_address, rating, image, data_source, fetched_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), name = VALUES(name), formatted_address = VALUES(formatted_address), rating = VALUES(rating), image = VALUES(image), data_source = VALUES(data_source), fetched_at = VALUES(fetched_at)`,
-      [req.user.id, place_id, name, formatted_address || null, rating || null, image || null, data_source || 'Google Places', fetched_at || null]
+      [req.user.id, place_id, name, formatted_address || null, rating || null, image || null, data_source || 'Veritabanı', formattedFetchedAt]
     );
     const [favorites] = await pool.query('SELECT idfavoriler, place_id, name, formatted_address, rating, image, data_source, fetched_at FROM favoriler WHERE user_id = ? AND place_id = ?', [req.user.id, place_id]);
     return res.status(201).json(favorites[0]);
   } catch (error) {
     console.error('Add favorite error:', error.message || error);
-    return res.status(500).json({ error: 'Favori kaydedilemedi.' });
+    return res.status(500).json({ error: 'Favori kaydedilemedi: ' + (error.message || '') });
   }
 });
 
@@ -367,17 +497,18 @@ app.post('/api/planned', requireUser, async (req, res) => {
   const { place_id, name, formatted_address, rating, image, data_source, fetched_at } = req.body;
   if (!place_id || !name) return res.status(400).json({ error: 'place_id ve name gereklidir.' });
   try {
+    const formattedFetchedAt = formatMysqlDatetime(fetched_at);
     await pool.query(
       `INSERT INTO gidilecekler (user_id, place_id, name, formatted_address, rating, image, data_source, fetched_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE name = VALUES(name), formatted_address = VALUES(formatted_address), rating = VALUES(rating), image = VALUES(image), data_source = VALUES(data_source), fetched_at = VALUES(fetched_at)`,
-      [req.user.id, place_id, name, formatted_address || null, rating || null, image || null, data_source || 'Google Places', fetched_at || null]
+      [req.user.id, place_id, name, formatted_address || null, rating || null, image || null, data_source || 'Veritabanı', formattedFetchedAt]
     );
     const [places] = await pool.query('SELECT id, place_id, name, formatted_address, rating, image, data_source, fetched_at FROM gidilecekler WHERE user_id = ? AND place_id = ?', [req.user.id, place_id]);
     return res.status(201).json(places[0]);
   } catch (error) {
     console.error('Add planned place error:', error.message || error);
-    return res.status(500).json({ error: 'Gidilecekler listesine eklenemedi.' });
+    return res.status(500).json({ error: 'Gidilecekler listesine eklenemedi: ' + (error.message || '') });
   }
 });
 
@@ -392,36 +523,46 @@ app.delete('/api/planned/:placeId', requireUser, async (req, res) => {
 });
 
 app.get('/api/cafes', async (req, res) => {
+  if (!databaseReady) {
+    return res.status(503).json({ error: dbUnavailableMessage });
+  }
+
   const { ilce } = req.query;
 
-  if (!ilce) {
-    return res.status(400).json({ error: 'ilce query parametresi gereklidir.' });
-  }
-
-  if (!process.env.GOOGLE_API_KEY) {
-    return res.status(500).json({ error: 'GOOGLE_API_KEY tanimli degil.' });
-  }
-
-  const params = new URLSearchParams({
-    query: `coffee+${ilce}+kocaeli`,
-    type: 'cafe',
-    key: process.env.GOOGLE_API_KEY,
-  });
-
   try {
-    const response = await fetch(
-      `https://maps.googleapis.com/maps/api/place/textsearch/json?${params}`
-    );
-    const data = await response.json();
+    let query = 'SELECT * FROM isletmeler';
+    const queryParams = [];
 
-    const fetchedAt = new Date().toISOString();
-    return res.status(response.ok ? 200 : response.status).json({
-      ...data,
-      results: (data.results || []).map((place) => ({ ...place, data_source: 'Google Places', fetched_at: fetchedAt })),
-    });
+    if (ilce && ilce.trim() && ilce.toLowerCase() !== 'kocaeli' && ilce.toLowerCase() !== 'tümü') {
+      query += ' WHERE LOWER(ilce) LIKE ? OR LOWER(adres) LIKE ? OR LOWER(name) LIKE ?';
+      const term = `%${ilce.trim().toLowerCase()}%`;
+      queryParams.push(term, term, term);
+    }
+
+    query += ' ORDER BY isletme_id DESC';
+
+    const [rows] = await pool.query(query, queryParams);
+
+    const results = rows.map((business) => ({
+      place_id: `owner-${business.isletme_id}`,
+      id: business.isletme_id,
+      name: business.name || business.ad,
+      formatted_address: business.adres,
+      rating: 4.8,
+      image: business.cover_image || 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=85',
+      data_source: 'Veritabanı',
+      fetched_at: business.created_at,
+      il: business.il,
+      ilce: business.ilce,
+      enlem: business.enlem,
+      boylam: business.boylam,
+      aciklama: business.aciklama,
+    }));
+
+    return res.json({ results });
   } catch (error) {
-    console.error('Cafes API error:', error.message || error);
-    return res.status(502).json({ error: 'Google Places API istegi basarisiz oldu.' });
+    console.error('Cafes database API error:', error.message || error);
+    return res.status(500).json({ error: 'Veritabanından kafeler alınamadı.' });
   }
 });
 
@@ -567,6 +708,7 @@ app.post('/api/owner/auth/login', async (req, res) => {
 });
 
 app.get('/api/owner/me', requireOwner, (req, res) => res.json({ user: req.owner }));
+app.get('/api/owner/auth/me', requireOwner, (req, res) => res.json({ user: req.owner }));
 
 app.post('/api/owner/auth/logout', requireOwner, async (req, res) => {
   await pool.query('UPDATE isletme_sahipleri SET session_token = NULL WHERE id = ?', [req.owner.id]);
@@ -595,26 +737,45 @@ app.get('/api/public/businesses', async (req, res) => {
   }
 });
 
-app.get('/api/owner/businesses', requireOwner, async (req, res) => {
+const getOwnerIsletmeler = async (req, res) => {
   try {
-    const [businesses] = await pool.query(
-      'SELECT * FROM isletmeler WHERE sahip_id = ? ORDER BY created_at DESC',
-      [req.owner.id]
-    );
+    let businesses = [];
+    try {
+      [businesses] = await pool.query(
+        'SELECT * FROM isletmeler WHERE sahip_id = ? ORDER BY isletme_id DESC',
+        [req.owner.id]
+      );
+    } catch (err1) {
+      try {
+        [businesses] = await pool.query(
+          'SELECT * FROM isletmeler WHERE isletme_sahibi_id = ? ORDER BY isletme_id DESC',
+          [req.owner.id]
+        );
+      } catch (err2) {
+        [businesses] = await pool.query(
+          'SELECT * FROM isletmeler WHERE user_id = ? ORDER BY isletme_id DESC',
+          [req.owner.id]
+        );
+      }
+    }
     return res.json(businesses);
   } catch (error) {
     console.error('Get businesses error:', error.message || error);
-    return res.status(500).json({ error: 'İşletmeler alınamadı.' });
+    return res.status(500).json({ error: 'İşletmeler alınamadı: ' + (error.message || '') });
   }
-});
+};
 
-app.post('/api/owner/businesses', requireOwner, async (req, res) => {
+app.get('/api/owner/businesses', requireOwner, getOwnerIsletmeler);
+app.get('/api/owner/isletmeler', requireOwner, getOwnerIsletmeler);
+
+const createOwnerIsletme = async (req, res) => {
   if (!databaseReady) {
     return res.status(503).json({ error: dbUnavailableMessage });
   }
 
-  const { name, aciklama, adres, il, ilce, enlem, boylam, cover_image } = req.body;
-  if (!name?.trim() || !adres?.trim() || !il?.trim() || !enlem || !boylam) {
+  const name = req.body.ad || req.body.name;
+  const { aciklama, adres, il, ilce, enlem, boylam, cover_image } = req.body;
+  if (!name?.trim() || !adres?.trim() || !il?.trim() || enlem === undefined || enlem === null || boylam === undefined || boylam === null) {
     return res.status(400).json({ error: 'İşletme adı, adres, il, enlem ve boylam zorunludur.' });
   }
 
@@ -630,19 +791,31 @@ app.post('/api/owner/businesses', requireOwner, async (req, res) => {
     console.error('Create business error:', error.message || error);
     return res.status(500).json({ error: 'İşletme oluşturulamadı.' });
   }
-});
+};
 
-app.put('/api/owner/businesses/:id', requireOwner, async (req, res) => {
+app.post('/api/owner/businesses', requireOwner, createOwnerIsletme);
+app.post('/api/owner/isletmeler', requireOwner, createOwnerIsletme);
+
+const updateOwnerIsletme = async (req, res) => {
   if (!databaseReady) {
     return res.status(503).json({ error: dbUnavailableMessage });
   }
 
-  const { name, aciklama, adres, il, ilce, enlem, boylam } = req.body;
-  if (!name?.trim() || !adres?.trim() || !il?.trim() || !enlem || !boylam) {
+  const name = req.body.ad || req.body.name;
+  const { aciklama, adres, il, ilce, enlem, boylam } = req.body;
+  if (!name?.trim() || !adres?.trim() || !il?.trim() || enlem === undefined || enlem === null || boylam === undefined || boylam === null) {
     return res.status(400).json({ error: 'İşletme adı, adres, il, enlem ve boylam zorunludur.' });
   }
 
   try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [req.params.id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu kafeyi güncelleme yetkiniz yok veya kafe bulunamadı.' });
+    }
+
     await pool.query(
       `UPDATE isletmeler SET name = ?, aciklama = ?, adres = ?, il = ?, ilce = ?, enlem = ?, boylam = ? 
        WHERE isletme_id = ? AND sahip_id = ?`,
@@ -654,7 +827,124 @@ app.put('/api/owner/businesses/:id', requireOwner, async (req, res) => {
     console.error('Update business error:', error.message || error);
     return res.status(500).json({ error: 'İşletme güncellenemedi.' });
   }
-});
+};
+
+app.put('/api/owner/businesses/:id', requireOwner, updateOwnerIsletme);
+app.put('/api/owner/isletmeler/:id', requireOwner, updateOwnerIsletme);
+
+// ========== İŞLETME RESİMLERİ ENDPOINTS ==========
+
+const getIsletmeResimleri = async (req, res) => {
+  try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
+      [req.params.isletmeId, req.owner.id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu işletmenin resimlerini görme yetkiniz yok.' });
+    }
+
+    const [images] = await pool.query(
+      'SELECT * FROM isletme_resimleri WHERE isletme_id = ? ORDER BY sira ASC, id ASC',
+      [req.params.isletmeId]
+    );
+    return res.json(images);
+  } catch (error) {
+    console.error('Get isletme resimleri error:', error.message || error);
+    return res.status(500).json({ error: 'Resimler yüklenemedi.' });
+  }
+};
+
+app.get('/api/owner/isletmeler/:isletmeId/resimler', requireOwner, getIsletmeResimleri);
+app.get('/api/owner/businesses/:isletmeId/resimler', requireOwner, getIsletmeResimleri);
+
+const postIsletmeResimleri = async (req, res) => {
+  if (!databaseReady) {
+    return res.status(503).json({ error: dbUnavailableMessage });
+  }
+
+  try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
+      [req.params.isletmeId, req.owner.id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu işletmeye resim ekleme yetkiniz yok.' });
+    }
+
+    const files = req.files || (req.file ? [req.file] : []);
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'Lütfen en az bir resim dosyası seçin.' });
+    }
+
+    const insertedImages = [];
+    for (const file of files) {
+      const dosyaYolu = `/uploads/isletmeler/${file.filename}`;
+      const [result] = await pool.query(
+        'INSERT INTO isletme_resimleri (isletme_id, dosya_yolu) VALUES (?, ?)',
+        [req.params.isletmeId, dosyaYolu]
+      );
+      const [newImg] = await pool.query('SELECT * FROM isletme_resimleri WHERE id = ?', [result.insertId]);
+      if (newImg[0]) insertedImages.push(newImg[0]);
+    }
+
+    return res.status(201).json(insertedImages.length === 1 ? insertedImages[0] : insertedImages);
+  } catch (error) {
+    console.error('Add isletme resimleri error:', error.message || error);
+    return res.status(500).json({ error: 'Resim kaydedilemedi: ' + (error.message || '') });
+  }
+};
+
+app.post('/api/owner/isletmeler/:isletmeId/resimler', requireOwner, uploadMiddleware, postIsletmeResimleri);
+app.post('/api/owner/businesses/:isletmeId/resimler', requireOwner, uploadMiddleware, postIsletmeResimleri);
+
+const deleteIsletmeResim = async (req, res) => {
+  if (!databaseReady) {
+    return res.status(503).json({ error: dbUnavailableMessage });
+  }
+
+  try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
+      [req.params.isletmeId, req.owner.id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu işletmenin resmini silme yetkiniz yok.' });
+    }
+
+    const [images] = await pool.query(
+      'SELECT * FROM isletme_resimleri WHERE id = ? AND isletme_id = ?',
+      [req.params.resimId, req.params.isletmeId]
+    );
+
+    if (!images[0]) {
+      return res.status(404).json({ error: 'Resim bulunamadı.' });
+    }
+
+    const image = images[0];
+    await pool.query('DELETE FROM isletme_resimleri WHERE id = ?', [image.id]);
+
+    if (image.dosya_yolu) {
+      const relativePath = image.dosya_yolu.replace(/^\//, '');
+      const fullPath = path.join(__dirname, relativePath);
+      if (fs.existsSync(fullPath)) {
+        try {
+          fs.unlinkSync(fullPath);
+        } catch (unlinkErr) {
+          console.error('Disk file deletion error:', unlinkErr);
+        }
+      }
+    }
+
+    return res.status(204).end();
+  } catch (error) {
+    console.error('Delete isletme resim error:', error.message || error);
+    return res.status(500).json({ error: 'Resim silinemedi: ' + (error.message || '') });
+  }
+};
+
+app.delete('/api/owner/isletmeler/:isletmeId/resimler/:resimId', requireOwner, deleteIsletmeResim);
+app.delete('/api/owner/businesses/:isletmeId/resimler/:resimId', requireOwner, deleteIsletmeResim);
 
 // ========== MENU KATEGORİLERİ ENDPOINTS ==========
 
@@ -769,6 +1059,13 @@ app.post('/api/owner/gallery', requireOwner, async (req, res) => {
     console.error('Create gallery image error:', error.message || error);
     return res.status(500).json({ error: 'Resim eklenemedi.' });
   }
+});
+
+// Global Error Handler Middleware (Guarantees JSON error responses)
+app.use((err, req, res, next) => {
+  console.error('Express Server Error:', err);
+  const status = err.status || err.statusCode || 400;
+  return res.status(status).json({ error: err.message || 'Sunucuda bir hata oluştu.' });
 });
 
 async function initializeDatabase() {

@@ -142,39 +142,72 @@ function App() {
     return () => { cancelled = true }
   }, [district])
 
+  function normalizeText(text) {
+    return (text || '')
+      .toLowerCase()
+      .replace(/i̇/g, 'i')
+      .replace(/ı/g, 'i')
+      .replace(/ğ/g, 'g')
+      .replace(/ü/g, 'u')
+      .replace(/ş/g, 's')
+      .replace(/ö/g, 'o')
+      .replace(/ç/g, 'c')
+      .trim()
+  }
+
   async function findCafes(selectedDistrict = district) {
     setStatus('loading')
     setError('')
     try {
       const response = await fetch('/api/public/businesses')
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        throw new Error('Backend sunucusu (http://localhost:3000) veya veritabanı aktif değil. Lütfen backend sunucunuzun çalıştığından emin olun.')
+      }
       const businesses = await response.json()
       if (!response.ok) throw new Error(businesses.error || 'Kafeler yüklenemedi.')
 
-      const ownerBusinesses = (businesses || [])
-        .filter((business) => {
-          const listedDistrict = (selectedDistrict || '').toLowerCase()
-          const sameIl = (business.il || '').toLowerCase() === listedDistrict
-          const sameIlce = (business.ilce || '').toLowerCase() === listedDistrict
-          return sameIl || sameIlce || !listedDistrict || listedDistrict === 'kocaeli'
-        })
-        .filter((business) => {
-          const term = businessSearch.trim().toLowerCase()
-          if (!term) return true
-          const haystack = `${business.name || ''} ${business.il || ''} ${business.ilce || ''} ${business.adres || ''}`.toLowerCase()
+      const normDistrict = normalizeText(selectedDistrict)
+
+      let matched = (businesses || []).filter((business) => {
+        const normIl = normalizeText(business.il)
+        const normIlce = normalizeText(business.ilce)
+        const normAdres = normalizeText(business.adres)
+        const normName = normalizeText(business.name || business.ad)
+
+        if (!normDistrict || normDistrict === 'kocaeli' || normDistrict === 'tumu') return true
+
+        return normIlce.includes(normDistrict) ||
+               normDistrict.includes(normIlce) ||
+               normAdres.includes(normDistrict) ||
+               normName.includes(normDistrict) ||
+               normIl.includes(normDistrict)
+      })
+
+      if (matched.length === 0 && (businesses || []).length > 0) {
+        matched = businesses
+      }
+
+      const term = normalizeText(businessSearch)
+      if (term) {
+        matched = matched.filter((b) => {
+          const haystack = normalizeText(`${b.name || b.ad || ''} ${b.il || ''} ${b.ilce || ''} ${b.adres || ''}`)
           return haystack.includes(term)
         })
-        .map((business) => ({
-          place_id: `owner-${business.isletme_id}`,
-          id: business.isletme_id,
-          name: business.name,
-          formatted_address: business.adres,
-          rating: 4.8,
-          image: business.cover_image || business.gallery_image || fallbackImages[0],
-          data_source: 'Cafe Sahibi',
-          fetched_at: business.created_at,
-          is_owner_business: true,
-          ...business,
-        }))
+      }
+
+      const ownerBusinesses = matched.map((business, idx) => ({
+        place_id: `owner-${business.isletme_id}`,
+        id: business.isletme_id,
+        name: business.name || business.ad,
+        formatted_address: business.adres,
+        rating: 4.8,
+        image: business.cover_image || business.gallery_image || fallbackImages[idx % fallbackImages.length],
+        data_source: 'Veritabanı',
+        fetched_at: business.created_at,
+        is_owner_business: true,
+        ...business,
+      }))
 
       setCafes(ownerBusinesses)
       setStatus('ready')
@@ -183,6 +216,10 @@ function App() {
       setStatus('error')
     }
   }
+
+  useEffect(() => {
+    findCafes(district)
+  }, [district])
 
   async function toggleFavorite(cafe) {
     if (!user) {
@@ -403,7 +440,7 @@ function App() {
         <nav className="nav-links" aria-label="Ana menü"><button className={!showFavorites && !showPlanned && !selectedCafe ? 'active' : ''} type="button" onClick={openDiscovery}>Keşfet</button><button className={showFavorites ? 'active' : ''} type="button" onClick={openFavorites}>Favoriler <span className="nav-count">{user ? favorites.length : 0}</span></button><button className={showPlanned ? 'active' : ''} type="button" onClick={openPlanned}>Gidilecekler <span className="nav-count">{user ? planned.length : 0}</span></button><a href="#hakkimizda">Hakkımızda</a></nav>
         <div className="header-actions">
           <button className="profile-chip" type="button" onClick={() => user ? logout() : setAuthOpen(true)}><span>{user ? user.name.slice(0, 2).toUpperCase() : 'G'}</span><small>{user ? `${user.name}<br />Çıkış yap` : 'Misafir<br />Giriş yap'}</small></button>
-          <button className="owner-circle-button" type="button" onClick={() => setOwnerAuthOpen(true)} aria-label="Cafe sahibi girişi">☕</button>
+          <a className="owner-circle-button" href="/isletme-girisi" aria-label="Cafe sahibi girişi" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none' }}>☕</a>
         </div>
       </header>
 
@@ -470,12 +507,13 @@ function App() {
                   <h1>{selectedCafe.name}</h1>
                   <button className={`favorite-button detail-favorite ${isFavorite(selectedCafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(selectedCafe)} aria-label="Favori durumu">{isFavorite(selectedCafe) ? '♥' : '♡'}</button>
                 </div>
-                <div className="detail-rating">★ {selectedCafe.rating || '—'} <span>{selectedCafe.user_ratings_total ? `(${selectedCafe.user_ratings_total} değerlendirme)` : 'Google değerlendirmeleri'}</span></div>
+                <div className="detail-rating">★ {selectedCafe.rating || '—'} <span>{selectedCafe.user_ratings_total ? `(${selectedCafe.user_ratings_total} değerlendirme)` : 'Kullanıcı değerlendirmeleri'}</span></div>
                 <p className="detail-address">⌖ {selectedCafe.formatted_address || `${district}, Kocaeli`}</p>
-                <p className="detail-source">Veri kaynağı: {selectedCafe.data_source || 'Google Places'} · {selectedCafe.fetched_at ? `Sorgulama: ${new Date(selectedCafe.fetched_at).toLocaleDateString('tr-TR')}` : 'Güncel Google verisi'}</p>
+                <p className="detail-source">Veri kaynağı: {selectedCafe.data_source || 'Veritabanı'} · {selectedCafe.fetched_at ? `Kayıt Tarihi: ${new Date(selectedCafe.fetched_at).toLocaleDateString('tr-TR')}` : 'Sistem verisi'}</p>
                 <p className="detail-intro">Kahve molan için {selectedCafe.name} hakkında bilmen gerekenler. Mekanın atmosferini keşfet, konumunu kaydet ve bir sonraki kahve durağını planla.</p>
                 <div className="detail-actions">
                   <button className="primary-button" type="button" onClick={() => toggleFavorite(selectedCafe)}>{isFavorite(selectedCafe) ? 'Favorilerde' : 'Favorilere ekle'} <span>♥</span></button>
+                  <button className="outline-button" type="button" onClick={() => togglePlanned(selectedCafe)} style={{ cursor: 'pointer' }}>{isPlanned(selectedCafe) ? 'Gidileceklerde ✓' : 'Gidileceklere ekle +'}</button>
                   <a className="outline-button" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedCafe.name + ' ' + (selectedCafe.formatted_address || district))}`} target="_blank" rel="noreferrer">Haritada aç ↗</a>
                 </div>
               </div>
@@ -486,7 +524,7 @@ function App() {
                 <div className="section-heading detail-heading"><div><p className="eyebrow">Ziyaret notları</p><h2>Bu mekanı keşfet</h2></div></div>
                 <div className="detail-facts">
                   <div><span>☕</span><strong>Kahve durağı</strong><small>Yeni bir tat keşfet</small></div>
-                  <div><span>★</span><strong>{selectedCafe.rating || '—'} puan</strong><small>Google değerlendirmesi</small></div>
+                  <div><span>★</span><strong>{selectedCafe.rating || '—'} puan</strong><small>Platform değerlendirmesi</small></div>
                   <div><span>⌖</span><strong>{district}</strong><small>Kocaeli, Türkiye</small></div>
                 </div>
               </div>
@@ -580,7 +618,7 @@ function App() {
                     return haystack.includes(term)
                   }).map((cafe, index) => (
                   <article className="cafe-card" key={cafe.place_id || cafe.name}>
-                    <div className="card-image-wrap"><img src={fallbackImages[index % fallbackImages.length]} alt={cafe.name} /><button className={`favorite-button ${isFavorite(cafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(cafe)} aria-label={`${cafe.name} favori durumu`}>{isFavorite(cafe) ? '♥' : '♡'}</button><button className={`planned-button ${isPlanned(cafe) ? 'planned-saved' : ''}`} type="button" onClick={() => togglePlanned(cafe)} aria-label={`${cafe.name} gidilecekler durumu`}>{isPlanned(cafe) ? '✓' : '+'}</button></div>
+                    <div className="card-image-wrap"><img src={fallbackImages[index % fallbackImages.length]} alt={cafe.name} /><button className={`favorite-button ${isFavorite(cafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(cafe)} title={isFavorite(cafe) ? 'Favorilerden çıkar' : 'Favorilere ekle'} aria-label={`${cafe.name} favori durumu`}>{isFavorite(cafe) ? '♥' : '♡'}</button><button className={`planned-button ${isPlanned(cafe) ? 'planned-saved' : ''}`} type="button" onClick={() => togglePlanned(cafe)} title={isPlanned(cafe) ? 'Gidileceklerden çıkar' : 'Gidileceklere ekle'} aria-label={`${cafe.name} gidilecekler durumu`}>{isPlanned(cafe) ? '✓' : '+'}</button></div>
                     <div className="card-content"><div className="card-title-row"><h3>{cafe.name}</h3><span className="rating">★ {cafe.rating || '—'}</span></div><p className="address">⌖ {cafe.formatted_address || `${district}, Kocaeli`}</p><button className="detail-link" type="button" onClick={() => openCafe(cafe, index)}>Mekanı incele <span>↗</span></button></div>
                   </article>
                 ))}</div>

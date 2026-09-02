@@ -129,9 +129,11 @@ footer strong { color: #fff0e5; font-family: var(--heading); font-weight: normal
 .review-fields input:focus, .review-fields textarea:focus { border-color: var(--accent); }
 .review-form .primary-button { min-height: 40px; margin-top: 12px; }
 .review-form .primary-button:disabled { cursor: not-allowed; opacity: .45; }
-.auth-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(52, 35, 28, .5); }
-.auth-panel { width: min(100%, 390px); position: relative; padding: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: 0 24px 70px rgba(52, 35, 28, .25); }
-.small-owner-panel { width: min(100%, 360px); }
+.auth-backdrop { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(52, 35, 28, .55); overflow-y: auto; box-sizing: border-box; }
+.auth-panel { width: min(100%, 440px); max-height: 88vh; overflow-y: auto; position: relative; padding: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: 0 24px 70px rgba(52, 35, 28, .25); box-sizing: border-box; }
+.auth-panel::-webkit-scrollbar { width: 6px; }
+.auth-panel::-webkit-scrollbar-thumb { background: #c8aea0; border-radius: 4px; }
+.small-owner-panel { width: min(100%, 420px); }
 .auth-panel h2 { font-size: 31px; }
 .auth-copy { margin-top: 8px; font-size: 13px; }
 .auth-panel input { width: 100%; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; outline: 0; color: var(--ink); background: #fff; font: 13px var(--sans); }
