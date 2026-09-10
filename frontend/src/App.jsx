@@ -24,6 +24,27 @@ function weatherSummary(code) {
   return { icon: '🌥️', label: 'Değişken', message: 'Kahve planın için hava uygun.' }
 }
 
+function mapWeatherIcon(icon) {
+  if (!icon) return '🌤️'
+  const iconStr = String(icon).trim()
+  const code = iconStr.toLowerCase()
+
+  const iconMap = {
+    '01d': '☀️', '01n': '🌙',
+    '02d': '🌤️', '02n': '🌤️',
+    '03d': '☁️',  '03n': '☁️',
+    '04d': '☁️',  '04n': '☁️',
+    '09d': '🌧️', '09n': '🌧️',
+    '10d': '🌧️', '10n': '🌧️',
+    '11d': '⛈️', '11n': '⛈️',
+    '13d': '❄️',  '13n': '❄️',
+    '50d': '🌫️', '50n': '🌫️',
+  }
+
+  return iconMap[code] || iconStr
+}
+
+
 function App() {
   const [district, setDistrict] = useState('Darıca')
   const [cafes, setCafes] = useState([])
@@ -120,17 +141,35 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const [latitude, longitude] = districtCoordinates[district]
     let cancelled = false
 
     async function loadWeather() {
       setWeatherStatus('loading')
       try {
-        const response = await fetch(`/api/weather?lat=${latitude}&lon=${longitude}`)
-        const data = await response.json()
-        if (!response.ok) throw new Error('Hava durumu alınamadı.')
+        const bugun = new Date().toISOString().split('T')[0]
+        const params = new URLSearchParams({ ilce: district, tarih: bugun })
+        const response = await fetch(`/api/weather?${params}`)
+        const rawData = await response.json()
+        if (!response.ok) throw new Error(rawData.error || 'Hava durumu alınamadı.')
         if (!cancelled) {
-          setWeather({ ...data.current_weather, ...weatherSummary(data.current_weather.weathercode) })
+          const data = Array.isArray(rawData) ? rawData[0] : rawData
+          const currentWeather = data.current_weather || data
+          const weatherCode = currentWeather.weathercode !== undefined ? currentWeather.weathercode : currentWeather.code
+          const summary = weatherCode !== undefined ? weatherSummary(weatherCode) : {}
+
+          const rawIcon = data.ikon || data.icon || currentWeather.icon || summary.icon || '🌤️'
+          const mappedIcon = mapWeatherIcon(rawIcon)
+
+          setWeather({
+            ...currentWeather,
+            ...summary,
+            ...data,
+            temperature: currentWeather.sicaklik !== undefined ? currentWeather.sicaklik : (currentWeather.temperature !== undefined ? currentWeather.temperature : 20),
+            windspeed: currentWeather.windspeed !== undefined ? currentWeather.windspeed : (currentWeather.ruzgar || 10),
+            icon: mappedIcon,
+            label: data.durum || data.label || currentWeather.label || summary.label || 'Parçalı bulutlu',
+            message: data.message || currentWeather.message || summary.message || 'Kahve molası için güzel bir gün.',
+          })
           setWeatherStatus('ready')
         }
       } catch {
@@ -144,6 +183,8 @@ function App() {
 
   function normalizeText(text) {
     return (text || '')
+      .replace(/İ/g, 'i')
+      .replace(/I/g, 'ı')
       .toLowerCase()
       .replace(/i̇/g, 'i')
       .replace(/ı/g, 'i')
@@ -159,57 +200,15 @@ function App() {
     setStatus('loading')
     setError('')
     try {
-      const response = await fetch('/api/public/businesses')
+      const response = await fetch(`/api/cafes?ilce=${encodeURIComponent(selectedDistrict)}`)
       const contentType = response.headers.get('content-type') || ''
       if (!contentType.includes('application/json')) {
         throw new Error('Backend sunucusu (http://localhost:3000) veya veritabanı aktif değil. Lütfen backend sunucunuzun çalıştığından emin olun.')
       }
-      const businesses = await response.json()
-      if (!response.ok) throw new Error(businesses.error || 'Kafeler yüklenemedi.')
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Kafeler yüklenemedi.')
 
-      const normDistrict = normalizeText(selectedDistrict)
-
-      let matched = (businesses || []).filter((business) => {
-        const normIl = normalizeText(business.il)
-        const normIlce = normalizeText(business.ilce)
-        const normAdres = normalizeText(business.adres)
-        const normName = normalizeText(business.name || business.ad)
-
-        if (!normDistrict || normDistrict === 'kocaeli' || normDistrict === 'tumu') return true
-
-        return normIlce.includes(normDistrict) ||
-               normDistrict.includes(normIlce) ||
-               normAdres.includes(normDistrict) ||
-               normName.includes(normDistrict) ||
-               normIl.includes(normDistrict)
-      })
-
-      if (matched.length === 0 && (businesses || []).length > 0) {
-        matched = businesses
-      }
-
-      const term = normalizeText(businessSearch)
-      if (term) {
-        matched = matched.filter((b) => {
-          const haystack = normalizeText(`${b.name || b.ad || ''} ${b.il || ''} ${b.ilce || ''} ${b.adres || ''}`)
-          return haystack.includes(term)
-        })
-      }
-
-      const ownerBusinesses = matched.map((business, idx) => ({
-        place_id: `owner-${business.isletme_id}`,
-        id: business.isletme_id,
-        name: business.name || business.ad,
-        formatted_address: business.adres,
-        rating: 4.8,
-        image: business.cover_image || business.gallery_image || fallbackImages[idx % fallbackImages.length],
-        data_source: 'Veritabanı',
-        fetched_at: business.created_at,
-        is_owner_business: true,
-        ...business,
-      }))
-
-      setCafes(ownerBusinesses)
+      setCafes(data.results || [])
       setStatus('ready')
     } catch (requestError) {
       setError(requestError.message)
@@ -618,7 +617,7 @@ function App() {
                     return haystack.includes(term)
                   }).map((cafe, index) => (
                   <article className="cafe-card" key={cafe.place_id || cafe.name}>
-                    <div className="card-image-wrap"><img src={fallbackImages[index % fallbackImages.length]} alt={cafe.name} /><button className={`favorite-button ${isFavorite(cafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(cafe)} title={isFavorite(cafe) ? 'Favorilerden çıkar' : 'Favorilere ekle'} aria-label={`${cafe.name} favori durumu`}>{isFavorite(cafe) ? '♥' : '♡'}</button><button className={`planned-button ${isPlanned(cafe) ? 'planned-saved' : ''}`} type="button" onClick={() => togglePlanned(cafe)} title={isPlanned(cafe) ? 'Gidileceklerden çıkar' : 'Gidileceklere ekle'} aria-label={`${cafe.name} gidilecekler durumu`}>{isPlanned(cafe) ? '✓' : '+'}</button></div>
+                    <div className="card-image-wrap"><img src={cafe.image || fallbackImages[index % fallbackImages.length]} alt={cafe.name} /><button className={`favorite-button ${isFavorite(cafe) ? 'saved' : ''}`} type="button" onClick={() => toggleFavorite(cafe)} title={isFavorite(cafe) ? 'Favorilerden çıkar' : 'Favorilere ekle'} aria-label={`${cafe.name} favori durumu`}>{isFavorite(cafe) ? '♥' : '♡'}</button><button className={`planned-button ${isPlanned(cafe) ? 'planned-saved' : ''}`} type="button" onClick={() => togglePlanned(cafe)} title={isPlanned(cafe) ? 'Gidileceklerden çıkar' : 'Gidileceklere ekle'} aria-label={`${cafe.name} gidilecekler durumu`}>{isPlanned(cafe) ? '✓' : '+'}</button></div>
                     <div className="card-content"><div className="card-title-row"><h3>{cafe.name}</h3><span className="rating">★ {cafe.rating || '—'}</span></div><p className="address">⌖ {cafe.formatted_address || `${district}, Kocaeli`}</p><button className="detail-link" type="button" onClick={() => openCafe(cafe, index)}>Mekanı incele <span>↗</span></button></div>
                   </article>
                 ))}</div>

@@ -530,26 +530,62 @@ app.get('/api/cafes', async (req, res) => {
   const { ilce } = req.query;
 
   try {
-    let query = 'SELECT * FROM isletmeler';
-    const queryParams = [];
+    const [rows] = await pool.query(`
+      SELECT i.*, (
+        SELECT r.dosya_yolu
+        FROM isletme_resimleri r
+        WHERE r.isletme_id = i.isletme_id
+        ORDER BY r.sira ASC, r.id ASC
+        LIMIT 1
+      ) AS kapak_resmi
+      FROM isletmeler i
+      ORDER BY i.isletme_id DESC
+    `);
 
-    if (ilce && ilce.trim() && ilce.toLowerCase() !== 'kocaeli' && ilce.toLowerCase() !== 'tümü') {
-      query += ' WHERE LOWER(ilce) LIKE ? OR LOWER(adres) LIKE ? OR LOWER(name) LIKE ?';
-      const term = `%${ilce.trim().toLowerCase()}%`;
-      queryParams.push(term, term, term);
-    }
+    const normalize = (str) => {
+      if (!str) return '';
+      return String(str)
+        .replace(/İ/g, 'i')
+        .replace(/I/g, 'ı')
+        .toLowerCase()
+        .replace(/ı/g, 'i')
+        .replace(/ğ/g, 'g')
+        .replace(/ü/g, 'u')
+        .replace(/ş/g, 's')
+        .replace(/ö/g, 'o')
+        .replace(/ç/g, 'c')
+        .trim();
+    };
 
-    query += ' ORDER BY isletme_id DESC';
+    const targetDistrict = normalize(ilce);
 
-    const [rows] = await pool.query(query, queryParams);
+    const filteredRows = rows.filter((business) => {
+      if (!targetDistrict || targetDistrict === 'kocaeli' || targetDistrict === 'tumu' || targetDistrict === 'tum') {
+        return true;
+      }
+      const normIlce = normalize(business.ilce);
+      const normAdres = normalize(business.adres);
+      const normName = normalize(business.name || business.ad);
+      const normIl = normalize(business.il);
 
-    const results = rows.map((business) => ({
+      return (
+        normIlce.includes(targetDistrict) ||
+        targetDistrict.includes(normIlce) ||
+        normAdres.includes(targetDistrict) ||
+        normName.includes(targetDistrict) ||
+        normIl.includes(targetDistrict)
+      );
+    });
+
+    const displayRows = (filteredRows.length === 0 && rows.length > 0) ? rows : filteredRows;
+
+    const results = displayRows.map((business) => ({
       place_id: `owner-${business.isletme_id}`,
       id: business.isletme_id,
       name: business.name || business.ad,
       formatted_address: business.adres,
       rating: 4.8,
-      image: business.cover_image || 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=85',
+      image: business.kapak_resmi || 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=85',
       data_source: 'Veritabanı',
       fetched_at: business.created_at,
       il: business.il,
@@ -608,28 +644,32 @@ app.post('/api/reviews', requireUser, async (req, res) => {
 });
 
 app.get('/api/weather', async (req, res) => {
-  const { lat, lon } = req.query;
-  const latitude = Number(lat);
-  const longitude = Number(lon);
+  const { ilce, tarih } = req.query;
 
-  if (!lat || !lon || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return res.status(400).json({ error: 'lat ve lon sayisal query parametreleri gereklidir.' });
+  if (!ilce) {
+    return res.status(400).json({ error: 'ilce query parametresi gereklidir.' });
   }
 
-  const params = new URLSearchParams({
-    latitude: String(latitude),
-    longitude: String(longitude),
-    current_weather: 'true',
-  });
-
   try {
-    const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+    const params = new URLSearchParams({ sehir: ilce });
+    if (tarih) params.append('tarih', tarih);
+
+    const response = await fetch(`${process.env.WEATHER_SERVICE_URL}?${params}`, {
+      headers: {
+        'X-Api-Key': process.env.WEATHER_SERVICE_API_KEY,
+      },
+    });
+
     const data = await response.json();
 
-    return res.status(response.ok ? 200 : response.status).json(data);
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
+
+    return res.json(data);
   } catch (error) {
-    console.error('Weather API error:', error.message || error);
-    return res.status(502).json({ error: 'Open-Meteo API istegi basarisiz oldu.' });
+    console.error('Hava durumu servisi hatasi:', error.message);
+    return res.status(502).json({ error: 'Hava durumu servisine ulaşılamadı.' });
   }
 });
 
@@ -739,25 +779,10 @@ app.get('/api/public/businesses', async (req, res) => {
 
 const getOwnerIsletmeler = async (req, res) => {
   try {
-    let businesses = [];
-    try {
-      [businesses] = await pool.query(
-        'SELECT * FROM isletmeler WHERE sahip_id = ? ORDER BY isletme_id DESC',
-        [req.owner.id]
-      );
-    } catch (err1) {
-      try {
-        [businesses] = await pool.query(
-          'SELECT * FROM isletmeler WHERE isletme_sahibi_id = ? ORDER BY isletme_id DESC',
-          [req.owner.id]
-        );
-      } catch (err2) {
-        [businesses] = await pool.query(
-          'SELECT * FROM isletmeler WHERE user_id = ? ORDER BY isletme_id DESC',
-          [req.owner.id]
-        );
-      }
-    }
+    const [businesses] = await pool.query(
+      'SELECT * FROM isletmeler WHERE sahip_id = ? ORDER BY isletme_id DESC',
+      [req.owner.id]
+    );
     return res.json(businesses);
   } catch (error) {
     console.error('Get businesses error:', error.message || error);
@@ -775,15 +800,18 @@ const createOwnerIsletme = async (req, res) => {
 
   const name = req.body.ad || req.body.name;
   const { aciklama, adres, il, ilce, enlem, boylam, cover_image } = req.body;
-  if (!name?.trim() || !adres?.trim() || !il?.trim() || enlem === undefined || enlem === null || boylam === undefined || boylam === null) {
-    return res.status(400).json({ error: 'İşletme adı, adres, il, enlem ve boylam zorunludur.' });
+  if (!name?.trim() || !adres?.trim() || !il?.trim()) {
+    return res.status(400).json({ error: 'İşletme adı, adres ve il zorunludur.' });
   }
+
+  const latitude = (enlem !== undefined && enlem !== null && !isNaN(Number(enlem))) ? Number(enlem) : 40.7654;
+  const longitude = (boylam !== undefined && boylam !== null && !isNaN(Number(boylam))) ? Number(boylam) : 29.9408;
 
   try {
     const [result] = await pool.query(
       `INSERT INTO isletmeler (sahip_id, name, aciklama, adres, il, ilce, enlem, boylam, cover_image)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.owner.id, name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, enlem, boylam, cover_image || null]
+      [req.owner.id, name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, latitude, longitude, cover_image || null]
     );
     const [newBusiness] = await pool.query('SELECT * FROM isletmeler WHERE isletme_id = ?', [result.insertId]);
     return res.status(201).json(newBusiness[0]);
@@ -803,9 +831,12 @@ const updateOwnerIsletme = async (req, res) => {
 
   const name = req.body.ad || req.body.name;
   const { aciklama, adres, il, ilce, enlem, boylam } = req.body;
-  if (!name?.trim() || !adres?.trim() || !il?.trim() || enlem === undefined || enlem === null || boylam === undefined || boylam === null) {
-    return res.status(400).json({ error: 'İşletme adı, adres, il, enlem ve boylam zorunludur.' });
+  if (!name?.trim() || !adres?.trim() || !il?.trim()) {
+    return res.status(400).json({ error: 'İşletme adı, adres ve il zorunludur.' });
   }
+
+  const latitude = (enlem !== undefined && enlem !== null && !isNaN(Number(enlem))) ? Number(enlem) : 40.7654;
+  const longitude = (boylam !== undefined && boylam !== null && !isNaN(Number(boylam))) ? Number(boylam) : 29.9408;
 
   try {
     const [check] = await pool.query(
@@ -819,7 +850,7 @@ const updateOwnerIsletme = async (req, res) => {
     await pool.query(
       `UPDATE isletmeler SET name = ?, aciklama = ?, adres = ?, il = ?, ilce = ?, enlem = ?, boylam = ? 
        WHERE isletme_id = ? AND sahip_id = ?`,
-      [name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, enlem, boylam, req.params.id, req.owner.id]
+      [name.trim(), aciklama || null, adres.trim(), il.trim(), ilce || null, latitude, longitude, req.params.id, req.owner.id]
     );
     const [updated] = await pool.query('SELECT * FROM isletmeler WHERE isletme_id = ?', [req.params.id]);
     return res.json(updated[0]);
@@ -837,8 +868,8 @@ app.put('/api/owner/isletmeler/:id', requireOwner, updateOwnerIsletme);
 const getIsletmeResimleri = async (req, res) => {
   try {
     const [check] = await pool.query(
-      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
-      [req.params.isletmeId, req.owner.id, req.owner.id]
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [req.params.isletmeId, req.owner.id]
     );
     if (!check[0]) {
       return res.status(403).json({ error: 'Bu işletmenin resimlerini görme yetkiniz yok.' });
@@ -865,8 +896,8 @@ const postIsletmeResimleri = async (req, res) => {
 
   try {
     const [check] = await pool.query(
-      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
-      [req.params.isletmeId, req.owner.id, req.owner.id]
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [req.params.isletmeId, req.owner.id]
     );
     if (!check[0]) {
       return res.status(403).json({ error: 'Bu işletmeye resim ekleme yetkiniz yok.' });
@@ -905,8 +936,8 @@ const deleteIsletmeResim = async (req, res) => {
 
   try {
     const [check] = await pool.query(
-      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND (sahip_id = ? OR isletme_sahibi_id = ?)',
-      [req.params.isletmeId, req.owner.id, req.owner.id]
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [req.params.isletmeId, req.owner.id]
     );
     if (!check[0]) {
       return res.status(403).json({ error: 'Bu işletmenin resmini silme yetkiniz yok.' });
@@ -972,6 +1003,14 @@ app.post('/api/owner/menu-categories', requireOwner, async (req, res) => {
   }
 
   try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [isletme_id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu işletmeye kategori ekleme yetkiniz yok.' });
+    }
+
     const [result] = await pool.query(
       'INSERT INTO menu_kategorileri (isletme_id, name) VALUES (?, ?)',
       [isletme_id, name.trim()]
@@ -988,6 +1027,16 @@ app.post('/api/owner/menu-categories', requireOwner, async (req, res) => {
 
 app.get('/api/owner/menu-items/:categoryId', requireOwner, async (req, res) => {
   try {
+    const [check] = await pool.query(
+      `SELECT mk.id FROM menu_kategorileri mk
+       JOIN isletmeler i ON i.isletme_id = mk.isletme_id
+       WHERE mk.id = ? AND i.sahip_id = ?`,
+      [req.params.categoryId, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu kategorinin ürünlerini görme yetkiniz yok.' });
+    }
+
     const [items] = await pool.query(
       'SELECT * FROM menu_urunleri WHERE kategori_id = ? ORDER BY sira',
       [req.params.categoryId]
@@ -1010,6 +1059,16 @@ app.post('/api/owner/menu-items', requireOwner, async (req, res) => {
   }
 
   try {
+    const [check] = await pool.query(
+      `SELECT mk.id FROM menu_kategorileri mk
+       JOIN isletmeler i ON i.isletme_id = mk.isletme_id
+       WHERE mk.id = ? AND i.sahip_id = ?`,
+      [kategori_id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu kategoriye ürün ekleme yetkiniz yok.' });
+    }
+
     const [result] = await pool.query(
       `INSERT INTO menu_urunleri (kategori_id, name, aciklama, fiyat, dosya_yolu)
        VALUES (?, ?, ?, ?, ?)`,
@@ -1049,6 +1108,14 @@ app.post('/api/owner/gallery', requireOwner, async (req, res) => {
   }
 
   try {
+    const [check] = await pool.query(
+      'SELECT isletme_id FROM isletmeler WHERE isletme_id = ? AND sahip_id = ?',
+      [isletme_id, req.owner.id]
+    );
+    if (!check[0]) {
+      return res.status(403).json({ error: 'Bu işletmeye resim ekleme yetkiniz yok.' });
+    }
+
     const [result] = await pool.query(
       'INSERT INTO isletme_resimleri (isletme_id, dosya_yolu) VALUES (?, ?)',
       [isletme_id, dosya_yolu.trim()]
